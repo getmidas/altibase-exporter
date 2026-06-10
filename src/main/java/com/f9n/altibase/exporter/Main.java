@@ -149,17 +149,34 @@ public class Main {
         PrometheusRegistry.defaultRegistry.register(new AltibaseCollector(conn, config.disabledMetrics(), config.exporterVersion()));
         log.info("Altibase metrics registered (custom collector, on-the-fly): disabled={}", config.disabledMetrics().isEmpty() ? "none" : config.disabledMetrics());
 
+        CustomQueryCollector customCollector = null;
+        Connection bgConn = null;
         if (config.queriesFile() != null && !config.queriesFile().isBlank()) {
             try {
-                List<CustomQueryCollector.QueryDef> customQueries = QueriesLoader.load(Path.of(config.queriesFile()));
-                if (!customQueries.isEmpty()) {
-                    PrometheusRegistry.defaultRegistry.register(new CustomQueryCollector(conn, customQueries));
-                    log.info("Custom queries loaded: file={} count={}", config.queriesFile(), customQueries.size());
+                List<CustomQueryCollector.JobDef> jobs = QueriesLoader.load(Path.of(config.queriesFile()));
+                int queryCount = jobs.stream().mapToInt(j -> j.queries().size()).sum();
+                if (queryCount > 0) {
+                    boolean hasBackground = jobs.stream().anyMatch(j -> j.interval() != null);
+                    if (hasBackground) {
+                        // Interval jobs run on a dedicated read-only connection so the background scheduler
+                        // never shares a (non-thread-safe) JDBC connection with the scrape-time collectors.
+                        bgConn = connectWithTimeout(config.jdbcUrl(), props, config.connectTimeoutSeconds(), config.server(), config.port(), config.database());
+                        bgConn.setReadOnly(true);
+                        try (var stmt = bgConn.createStatement()) {
+                            stmt.execute("exec set_client_info('altibase-exporter-custom')");
+                        } catch (SQLException ignored) {}
+                        log.info("Custom queries background connection established (read-only)");
+                    }
+                    customCollector = new CustomQueryCollector(conn, bgConn, jobs);
+                    PrometheusRegistry.defaultRegistry.register(customCollector);
+                    log.info("Custom queries loaded: file={} jobs={} queries={} background={}", config.queriesFile(), jobs.size(), queryCount, hasBackground);
                 }
             } catch (Exception e) {
                 log.warn("Custom queries file load failed: file={} error={}", config.queriesFile(), e.getMessage());
             }
         }
+        final CustomQueryCollector customCollectorFinal = customCollector;
+        final Connection bgConnFinal = bgConn;
 
         HttpHandler rootHandler = (HttpExchange exchange) -> {
             if (!"GET".equals(exchange.getRequestMethod())) {
@@ -204,11 +221,25 @@ public class Main {
             } catch (Exception e) {
                 log.error("HTTP server close failed: {}", e.getMessage());
             }
+            if (customCollectorFinal != null) {
+                try {
+                    customCollectorFinal.close();
+                } catch (Exception e) {
+                    log.error("Custom query collector close failed: {}", e.getMessage());
+                }
+            }
             Thread closeThread = new Thread(() -> {
                 try {
                     connFinal.close();
                 } catch (SQLException e) {
                     log.error("Connection close failed: {}", e.getMessage());
+                }
+                if (bgConnFinal != null) {
+                    try {
+                        bgConnFinal.close();
+                    } catch (SQLException e) {
+                        log.error("Background connection close failed: {}", e.getMessage());
+                    }
                 }
             });
             closeThread.setDaemon(true);

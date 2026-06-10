@@ -1,28 +1,50 @@
-# Example custom queries for the Altibase exporter.
+# Example custom queries for the Altibase exporter (sql_exporter "jobs" style).
 # Use with: ALTIBASE_QUERIES_FILE=examples/queries.yaml (or copy and edit this file).
-# Each query runs at scrape time; result rows become Prometheus gauge data points.
-# Required: name, help, sql. Optional: label_columns.
-# Use qualified table names (e.g. SCHEMA.TABLE) if tables are in another schema.
-# Metric names are always prefixed with "altibase_custom_" (e.g. name: ping → altibase_custom_ping).
+#
+# Queries are grouped into jobs. A job's `interval` controls how it is collected:
+#   - interval set   -> the job's queries run in the BACKGROUND at that cadence; /metrics serves
+#                       the last cached result instantly (DB load decoupled from scrape frequency).
+#                       Background jobs use a dedicated read-only connection.
+#   - interval unset -> the job's queries run at SCRAPE time (on each /metrics request).
+# interval accepts Go-style durations: 30s, 1m, 5m, 1h, 1h30m.
+# connections: under a job is IGNORED — the exporter uses the single connection from ALTIBASE_*.
+#
+# Query fields: name, help, query (alias sql), labels (alias label_columns), values.
+#   - Single value: the numeric column is named `value` (or the first non-label column)
+#     -> one metric altibase_custom_<name>.
+#   - Multiple values: list value columns under `values` -> one metric per value column,
+#     named altibase_custom_<name>_<value_column>; remaining columns become labels.
+# All metric names are prefixed with "altibase_custom_". Use qualified table names
+# (e.g. SCHEMA.TABLE) if tables are in another schema.
 
-queries:
-  - name: ping
-    help: "Ping check (SELECT 1)"
-    sql: "SELECT 1 AS value"
+jobs:
+  # Heavy/slow queries: collect every 5 minutes regardless of how often Prometheus scrapes.
+  - name: heavy
+    interval: 1m
+    queries:
+      # Changes with DB load — good for seeing the cache refresh each interval.
+      - name: activity
+        help: "Active sessions and statements (V$SESSION, V$STATEMENT)"
+        values:
+          - sessions
+          - statements
+        query: |
+          SELECT (SELECT COUNT(*) FROM V$SESSION)   AS sessions,
+                 (SELECT COUNT(*) FROM V$STATEMENT) AS statements
+          FROM DUAL
 
-  - name: db_mem_alloc_pages
-    help: "Memory alloc page count from V$DATABASE"
-    sql: "SELECT MEM_ALLOC_PAGE_COUNT AS value FROM V$DATABASE"
+      # Heartbeat: DB clock as HHMMSS — changes every run, unmistakable proof the cache refreshed.
+      - name: collect_clock
+        help: "DB time HHMMSS at collection (demo: confirms interval refresh)"
+        query: "SELECT TO_NUMBER(TO_CHAR(SYSDATE, 'HH24MISS')) AS value FROM DUAL"
 
-  - name: db_mem_free_pages
-    help: "Memory free page count from V$DATABASE"
-    sql: "SELECT MEM_FREE_PAGE_COUNT AS value FROM V$DATABASE"
+  # Cheap checks: no interval -> evaluated at scrape time.
+  - name: cheap
+    queries:
+      - name: ping
+        help: "Ping check (SELECT 1)"
+        query: "SELECT 1 AS value"
 
-  - name: lock_tx_count
-    help: "Transaction count in lock (V$LOCK + V$TRANSACTION, status 0,1,4,5)"
-    sql: "SELECT COUNT(*) AS value FROM V$LOCK L, V$TRANSACTION T WHERE T.ID = L.TRANS_ID AND T.STATUS IN (0,1,4,5)"
-
-  - name: repl_items
-    help: "Replication item count per replication name"
-    sql: "SELECT REPLICATION_NAME AS rep_name, COUNT(*) AS value FROM SYSTEM_.SYS_REPL_ITEMS_ GROUP BY REPLICATION_NAME"
-    label_columns: [rep_name]
+      - name: lock_tx_count
+        help: "Transaction count in lock (V$LOCK + V$TRANSACTION, status 0,1,4,5)"
+        query: "SELECT COUNT(*) AS value FROM V$LOCK L, V$TRANSACTION T WHERE T.ID = L.TRANS_ID AND T.STATUS IN (0,1,4,5)"

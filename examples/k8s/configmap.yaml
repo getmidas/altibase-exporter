@@ -11,8 +11,11 @@ data:
   WEB_LISTEN_PORT: "9399"
   # Optional: custom queries file. If present, use deployment-with-queries.yaml and set ALTIBASE_QUERIES_FILE.
   queries.yaml: |
-    queries:
-      - name: altibase_ping
-        help: "Ping check (SELECT 1)"
-        sql: "SELECT 1 AS value"
-      # Add more queries; use label_columns for labels.
+    jobs:
+      - name: cheap
+        # no interval -> run at scrape time; add interval (e.g. 5m) to collect in the background.
+        queries:
+          - name: altibase_ping
+            help: "Ping check (SELECT 1)"
+            query: "SELECT 1 AS value"
+          # Add more queries; use labels for label columns and values for multiple value columns.
