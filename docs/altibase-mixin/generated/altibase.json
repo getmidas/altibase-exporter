@@ -3327,7 +3327,7 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "percentunit"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -3357,12 +3357,12 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "altibase_sequence_usage_ratio{instance=~\"$instance\"}",
-          "legendFormat": "{{schema}}.{{sequence}} - {{instance}}",
+          "expr": "count by (schema) (altibase_sequence_exists{instance=~\"$instance\"})",
+          "legendFormat": "{{schema}} - {{instance}}",
           "refId": "A"
         }
       ],
-      "title": "Sequence usage ratio",
+      "title": "Sequence count by schema",
       "type": "timeseries"
     },
     {

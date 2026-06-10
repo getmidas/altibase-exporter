@@ -6,11 +6,11 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.HashMap;
 
 import io.prometheus.metrics.model.registry.MultiCollector;
 import io.prometheus.metrics.model.snapshots.GaugeSnapshot;
@@ -624,8 +624,9 @@ public final class AltibaseCollector implements MultiCollector {
     @ScrapeMetric("queue_usage_bytes")
     private void scrapeQueueUsage(ScrapeContext ctx) throws SQLException {
         String sql = """
-            SELECT B.TABLE_NAME, C.FIXED_ALLOC_MEM+C.VAR_ALLOC_MEM AS ALLOC FROM SYSTEM_.SYS_USERS_ A, SYSTEM_.SYS_TABLES_ B, V$MEMTBL_INFO C, V$TABLESPACES D \
-            WHERE A.USER_NAME <> 'SYSTEM_' AND B.TABLE_TYPE = 'Q' AND A.USER_ID = B.USER_ID AND B.TABLE_OID = C.TABLE_OID AND B.TBS_ID = D.ID
+            SELECT B.TABLE_NAME, SUM(C.FIXED_ALLOC_MEM+C.VAR_ALLOC_MEM) AS ALLOC FROM SYSTEM_.SYS_USERS_ A, SYSTEM_.SYS_TABLES_ B, V$MEMTBL_INFO C, V$TABLESPACES D \
+            WHERE A.USER_NAME <> 'SYSTEM_' AND B.TABLE_TYPE = 'Q' AND A.USER_ID = B.USER_ID AND B.TABLE_OID = C.TABLE_OID AND B.TBS_ID = D.ID \
+            GROUP BY B.TABLE_NAME
             """;
         try (ResultSet rs = ctx.statement().executeQuery(sql)) {
             while (rs.next()) {
@@ -1091,106 +1092,60 @@ public final class AltibaseCollector implements MultiCollector {
         }
     }
 
-    /** Sequence usage: current value, usage ratio, min/max, cycle, cache. Uses SYS_REPL_ITEMS_ (replicated sequences) and SYS_SEQUENCES_. */
-    @ScrapeMetric(value = {"sequence_current_value", "sequence_usage_ratio", "sequence_min_value", "sequence_max_value", "sequence_cycle", "sequence_cache"}, catchSchemaError = true)
+    /** Sequence metrics: existence (all sequences) and current value (replicated sequences). Uses SYS_TABLES_ and SYS_REPL_ITEMS_. */
+    @ScrapeMetric(value = {"sequence_exists", "sequence_current_value"}, catchSchemaError = true)
     private void scrapeSequenceUsage(ScrapeContext ctx) throws SQLException {
-        Map<String, Long> maxBySeq = new HashMap<>();
-        Map<String, Long> minBySeq = new HashMap<>();
-        Map<String, Integer> cycleBySeq = new HashMap<>();
-        Map<String, Long> cacheBySeq = new HashMap<>();
+        // Enumerate every sequence (TABLE_TYPE='S'); one series each (value 1).
         try (ResultSet rs = ctx.statement().executeQuery(
-                "SELECT USER_NAME, SEQUENCE_NAME, MIN_VALUE, MAX_VALUE, CYCLE, CACHE_SIZE FROM SYSTEM_.SYS_SEQUENCES_")) {
+                "SELECT U.USER_NAME, T.TABLE_NAME FROM SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U "
+                + "WHERE T.USER_ID = U.USER_ID AND T.TABLE_TYPE = 'S' AND U.USER_NAME <> 'SYSTEM_'")) {
             while (rs.next()) {
-                String user = nullToEmpty(rs.getString(1)).trim();
+                String schema = nullToEmpty(rs.getString(1)).trim();
                 String seq = nullToEmpty(rs.getString(2)).trim();
-                if (user.isEmpty() || seq.isEmpty()) continue;
-                String key = user + "." + seq;
-                try { minBySeq.put(key, rs.getLong(3)); } catch (SQLException ignored) { }
-                long maxVal = rs.getLong(4);
-                if (maxVal > 0) maxBySeq.put(key, maxVal);
-                try {
-                    Object c = rs.getObject(5);
-                    int cycle = 0;
-                    if (c instanceof Number) cycle = ((Number) c).intValue() != 0 ? 1 : 0;
-                    else if (c != null) cycle = "Y".equalsIgnoreCase(String.valueOf(c).trim()) ? 1 : 0;
-                    cycleBySeq.put(key, cycle);
-                } catch (SQLException ignored) { }
-                try {
-                    long cacheSize = rs.getLong(6);
-                    if (!rs.wasNull()) cacheBySeq.put(key, cacheSize);
-                } catch (SQLException ignored) { }
+                if (schema.isEmpty() || seq.isEmpty()) continue;
+                ctx.addGauge("sequence_exists", Labels.of("schema", schema, "sequence", seq), 1);
             }
         } catch (SQLException e) {
-            try (ResultSet rs = ctx.statement().executeQuery(
-                    "SELECT USER_NAME, SEQUENCE_NAME, MIN_VALUE, MAX_VALUE, CYCLE FROM SYSTEM_.SYS_SEQUENCES_")) {
-                while (rs.next()) {
-                    String user = nullToEmpty(rs.getString(1)).trim();
-                    String seq = nullToEmpty(rs.getString(2)).trim();
-                    if (user.isEmpty() || seq.isEmpty()) continue;
-                    String key = user + "." + seq;
-                    try { minBySeq.put(key, rs.getLong(3)); } catch (SQLException ignored) { }
-                    long maxVal = rs.getLong(4);
-                    if (maxVal > 0) maxBySeq.put(key, maxVal);
-                    try {
-                        Object c = rs.getObject(5);
-                        int cycle = 0;
-                        if (c instanceof Number) cycle = ((Number) c).intValue() != 0 ? 1 : 0;
-                        else if (c != null) cycle = "Y".equalsIgnoreCase(String.valueOf(c).trim()) ? 1 : 0;
-                        cycleBySeq.put(key, cycle);
-                    } catch (SQLException ignored) { }
-                }
-            } catch (SQLException e2) {
-                try (ResultSet rs = ctx.statement().executeQuery(
-                        "SELECT USER_NAME, SEQUENCE_NAME, MAX_VALUE FROM SYSTEM_.SYS_SEQUENCES_")) {
-                    while (rs.next()) {
-                        String user = nullToEmpty(rs.getString(1)).trim();
-                        String seq = nullToEmpty(rs.getString(2)).trim();
-                        if (user.isEmpty() || seq.isEmpty()) continue;
-                        long maxVal = rs.getLong(3);
-                        if (maxVal > 0) maxBySeq.put(user + "." + seq, maxVal);
-                    }
-                } catch (SQLException e3) {
-                    log.debug("SYS_SEQUENCES_ not available or different schema: {}", e.getMessage());
-                }
-            }
+            log.debug("Sequence enumeration (SYS_TABLES_ TABLE_TYPE=S) failed: {}", e.getMessage());
         }
-        // Altibase standard: sequence sync tables in replication are named SEQUENCE_NAME$SEQ (SYS_REPL_ITEMS_.LOCAL_TABLE_NAME)
+
+        // Current value for replicated sequences: sync tables are named SEQUENCE_NAME$SEQ (SYS_REPL_ITEMS_.LOCAL_TABLE_NAME).
+        // Sequence attributes (min/max/cycle/cache) have no read-only source in supported versions, so they are not collected.
+        // Read all sync-table rows first, then query each: a Statement allows only one open
+        // ResultSet, so running the inner LAST_SYNC_SEQ query while the outer cursor is open
+        // would close it and cut the loop short after a single row.
+        // The same sync table can appear under multiple replications in SYS_REPL_ITEMS_; dedupe by
+        // (schema, table) so we emit one series per sequence (and avoid duplicate-label errors).
         String sql = "SELECT LOCAL_USER_NAME, LOCAL_TABLE_NAME FROM SYSTEM_.SYS_REPL_ITEMS_ WHERE UPPER(LOCAL_TABLE_NAME) LIKE '%$SEQ%'";
+        List<String[]> syncTables = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
         try (ResultSet rs = ctx.statement().executeQuery(sql)) {
-            int count = 0;
-            final int maxSequences = 100;
-            while (rs.next() && count < maxSequences) {
+            while (rs.next()) {
                 String schema = nullToEmpty(rs.getString(1)).trim();
                 String tableName = nullToEmpty(rs.getString(2)).trim();
                 if (schema.isEmpty() || tableName.isEmpty()) continue;
-                long current;
-                try {
-                    String q = "SELECT LAST_SYNC_SEQ FROM \"" + schema.replace("\"", "\"\"") + "\".\"" + tableName.replace("\"", "\"\"") + "\"";
-                    try (ResultSet inner = ctx.statement().executeQuery(q)) {
-                        current = inner.next() ? inner.getLong(1) : 0;
-                    }
-                } catch (SQLException e) {
-                    log.trace("Sequence {}.\"{}\": {}", schema, tableName, e.getMessage());
-                    continue;
-                }
-                count++;
-                String baseName = tableName.replaceAll("\\$[sS][eE][qQ]$", "");
-                Labels labels = Labels.of("schema", schema, "sequence", baseName);
-                ctx.addGauge("sequence_current_value", labels, current);
-                String key = schema + "." + baseName;
-                Long maxVal = maxBySeq.get(key);
-                Long minVal = minBySeq.get(key);
-                Integer cycle = cycleBySeq.get(key);
-                if (maxVal != null && maxVal > 0) {
-                    double ratio = Math.min(1.0, (double) current / maxVal);
-                    ctx.addGauge("sequence_usage_ratio", labels, ratio);
-                }
-                if (minVal != null) ctx.addGauge("sequence_min_value", labels, minVal);
-                if (maxVal != null) ctx.addGauge("sequence_max_value", labels, maxVal);
-                if (cycle != null) ctx.addGauge("sequence_cycle", labels, cycle);
-                Long cacheSize = cacheBySeq.get(key);
-                if (cacheSize != null) ctx.addGauge("sequence_cache", labels, cacheSize);
+                if (seen.add(schema + " " + tableName)) syncTables.add(new String[]{schema, tableName});
             }
+        }
+        int count = 0;
+        final int maxSequences = 100;
+        for (String[] st : syncTables) {
+            if (count >= maxSequences) break;
+            String schema = st[0];
+            String tableName = st[1];
+            long current;
+            try {
+                String q = "SELECT LAST_SYNC_SEQ FROM \"" + schema.replace("\"", "\"\"") + "\".\"" + tableName.replace("\"", "\"\"") + "\"";
+                try (ResultSet inner = ctx.statement().executeQuery(q)) {
+                    current = inner.next() ? inner.getLong(1) : 0;
+                }
+            } catch (SQLException e) {
+                log.trace("Sequence {}.\"{}\": {}", schema, tableName, e.getMessage());
+                continue;
+            }
+            count++;
+            String baseName = tableName.replaceAll("\\$[sS][eE][qQ]$", "");
+            ctx.addGauge("sequence_current_value", Labels.of("schema", schema, "sequence", baseName), current);
         }
     }
 }

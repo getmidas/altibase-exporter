@@ -182,24 +182,6 @@ groups:
           summary: "Altibase uncommitted transactions elevated"
           description: "{{ $value }} uncommitted transaction queries. Check for stuck transactions."
 
-      - alert: AltibaseSequenceUsageHigh
-        expr: altibase_sequence_usage_ratio > 0.85
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Altibase sequence {{ $labels.schema }}.{{ $labels.sequence }} near MAXVALUE"
-          description: "Sequence is {{ $value | humanizePercentage }} of MAXVALUE. Consider ALTER SEQUENCE ... MAXVALUE or CYCLE."
-
-      - alert: AltibaseSequenceUsageCritical
-        expr: altibase_sequence_usage_ratio > 0.98
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Altibase sequence {{ $labels.schema }}.{{ $labels.sequence }} almost exhausted"
-          description: "Sequence is {{ $value | humanizePercentage }} of MAXVALUE. Immediate action required."
-
       - alert: AltibaseJobError
         expr: altibase_job_error_code != 0
         for: 2m
