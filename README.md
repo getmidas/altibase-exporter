@@ -92,12 +92,8 @@ To disable specific metrics:
 | `altibase_replication_gap_rep_sn` | replication | Replication position SN. |
 | `altibase_replication_receiver_apply_xsn` | replication | Applied XLog position. |
 | `altibase_replication_item` | replication, local_user, local_table | Replicated tables (1 per table). |
+| `altibase_sequence_exists` | schema, sequence | One series per sequence (value 1); from SYS_TABLES_. Use `count()` for totals. |
 | `altibase_sequence_current_value` | schema, sequence | Current value (replicated sequences). |
-| `altibase_sequence_usage_ratio` | schema, sequence | Usage 0–1 vs MAXVALUE. |
-| `altibase_sequence_min_value` | schema, sequence | MINVALUE. |
-| `altibase_sequence_max_value` | schema, sequence | MAXVALUE. |
-| `altibase_sequence_cycle` | schema, sequence | 1=CYCLE, 0=NOCYCLE. |
-| `altibase_sequence_cache` | schema, sequence | Cache size (values pre-allocated). |
 | `altibase_job_state` | job_name | 0=idle, 1=executing. |
 | `altibase_job_exec_count` | job_name | Execution count. |
 | `altibase_job_error_code` | job_name | Last error code. |
@@ -143,12 +139,38 @@ Replication metrics align with the [Altibase Replication Manual](https://docs.al
 
 ## Custom queries (SQL exporter style)
 
-Use a YAML **queries file** to run your own SQL and expose results as gauges.
+Use a YAML **queries file** to run your own SQL and expose results as gauges. Queries are grouped into **jobs** (sql_exporter style) — see [examples/queries.yaml](examples/queries.yaml).
 
-- Set path with `ALTIBASE_QUERIES_FILE` or `-altibase.queries-file` (e.g. `ALTIBASE_QUERIES_FILE=examples/queries.yaml`).
-- Format: see [examples/queries.yaml](examples/queries.yaml) — each entry has **name**, **help**, **sql** (numeric `value` column), optional **label_columns**.
-- Every custom metric is exposed with the **`altibase_custom_`** prefix (e.g. `name: ping` → `altibase_custom_ping`), so names cannot clash with built-in `altibase_*` metrics.
-- If the file is missing or path empty, only built-in metrics are collected.
+```yaml
+jobs:
+  - name: heavy
+    interval: 5m          # run these queries every 5m in the background; /metrics serves the cache
+    queries:
+      - name: database_pages
+        help: "Memory page counts"
+        labels: [db_name]
+        values: [mem_alloc, mem_free]
+        query: "SELECT DB_NAME AS db_name, MEM_ALLOC_PAGE_COUNT AS mem_alloc, MEM_FREE_PAGE_COUNT AS mem_free FROM V$DATABASE"
+  - name: cheap
+    queries:              # no interval → run at scrape time
+      - { name: ping, help: "Ping", query: "SELECT 1 AS value" }
+```
+
+**Setup**
+- Set path with `ALTIBASE_QUERIES_FILE` or `-altibase.queries-file` (e.g. `ALTIBASE_QUERIES_FILE=examples/queries.yaml`). If the file is missing or empty, only built-in metrics are collected.
+- A top-level `queries:` (without `jobs:`) is **not** supported — wrap queries under a job.
+
+**Query fields** — **name**, **help**, **query** (alias **sql**), optional **labels** (alias **label_columns**) and **values**:
+- **Single value:** the numeric column is named `value` (or the first non-label column) → one metric `altibase_custom_<name>`.
+- **Multiple values:** list value columns under **values** → one metric per value column, named `altibase_custom_<name>_<value_column>`. Any column not in `values` (and not declared in `labels`) becomes a label. Lets you reuse `sql_exporter`-style query bodies (e.g. `pg_stat_user_tables`) almost verbatim.
+- Every custom metric carries the **`altibase_custom_`** prefix, so names cannot clash with built-in `altibase_*` metrics.
+
+**Jobs and intervals**
+- **`interval`** (e.g. `30s`, `1m`, `5m`, `1h30m`): the job's queries run on a background scheduler at that cadence; `/metrics` returns the **last cached** result instantly. Decouples DB load from Prometheus' `scrape_interval` (useful for slow/heavy queries). Interval jobs use a **dedicated read-only connection** so background collection never contends with scrape-time collectors.
+- **No `interval`**: queries run synchronously at scrape time (effective frequency = Prometheus `scrape_interval`).
+- **`connections:`** under a job is **ignored** — the exporter always uses the single connection from `ALTIBASE_*`. Run one exporter per target.
+
+**Notes**
 - **Tables/views must exist** in the DB the exporter connects to. If you see `Custom query failed: ... Table or view was not found`, use qualified names in SQL (e.g. `SCHEMA_NAME.TABLE_NAME`) or point the exporter at the correct database.
 
 ---
