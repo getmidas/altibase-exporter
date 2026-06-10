@@ -31,7 +31,7 @@ The exporter needs only JDBC access to Altibase (no ODBC or Altibase install on 
 | `ALTIBASE_DATABASE` | Database name | mydb |
 | `WEB_LISTEN_PORT` | Exporter HTTP port | 9399 |
 | `ALTIBASE_QUERIES_FILE` | Path to custom queries YAML (optional) | — |
-| `ALTIBASE_DISABLED_METRICS` | Comma-separated list of built-in metric keys to disable (e.g. `sysstat`, `replication_gap`, `property`) | — |
+| `ALTIBASE_DISABLED_METRICS` | Comma-separated list of built-in metric keys to disable (e.g. `sysstat`, `replication_gap`, `property`). Use `*` to disable **all** built-in metrics (e.g. to run only custom queries). | — |
 | `LOG_LEVEL` | Log level: `DEBUG`, `INFO`, `WARN`, `ERROR`. Logs are JSON (structured) to stdout. | INFO |
 
 Run: set env or use command-line flags (see [DEVELOPMENT.md](DEVELOPMENT.md)). Metrics at `http://localhost:9399/metrics`.
@@ -47,6 +47,7 @@ The exporter collects **built-in** metrics from Altibase V$ system views and **J
 To disable specific metrics:
 
 - Set `ALTIBASE_DISABLED_METRICS` to a comma-separated list of **metric keys** (metric name without the `altibase_` prefix), e.g. `ALTIBASE_DISABLED_METRICS=sysstat,replication_gap`.
+- Use `ALTIBASE_DISABLED_METRICS=*` to disable **all** built-in metrics — useful to run the exporter with only custom queries (skips the built-in V$ scrape entirely).
 - Identity/health metrics (`altibase_exporter_build_info`, `altibase_exporter_last_scrape_success`, `altibase_scrape_duration_seconds`, `altibase_version_info`) cannot be disabled.
 
 

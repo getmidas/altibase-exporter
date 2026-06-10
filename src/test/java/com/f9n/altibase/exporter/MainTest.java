@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MainTest {
@@ -38,5 +39,22 @@ class MainTest {
     void parseDisabledMetrics_emptySegmentsFiltered() {
         assertEquals(Set.of("a", "b"), Main.parseDisabledMetrics("a,,b"));
         assertEquals(Set.of("x"), Main.parseDisabledMetrics("  ,  x  ,  "));
+    }
+
+    @Test
+    void isDisabled_wildcardDisablesEveryKey() {
+        AltibaseCollector all = new AltibaseCollector(null, Set.of("*"), "0");
+        assertTrue(all.isDisabled("sysstat"));
+        assertTrue(all.isDisabled("anything"));
+    }
+
+    @Test
+    void isDisabled_respectsSpecificKeysAndDefaults() {
+        AltibaseCollector some = new AltibaseCollector(null, Set.of("sysstat"), "0");
+        assertTrue(some.isDisabled("sysstat"));
+        assertFalse(some.isDisabled("property"));
+
+        AltibaseCollector none = new AltibaseCollector(null, Set.of(), "0");
+        assertFalse(none.isDisabled("sysstat"));
     }
 }

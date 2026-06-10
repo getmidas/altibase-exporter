@@ -115,7 +115,7 @@ public final class AltibaseCollector implements MultiCollector {
     }
 
     boolean isDisabled(String key) {
-        return !disabledMetrics.isEmpty() && disabledMetrics.contains(key);
+        return disabledMetrics.contains("*") || disabledMetrics.contains(key);
     }
 
     private boolean shouldSkipScrape(ScrapeMetric a) {
