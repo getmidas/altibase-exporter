@@ -75,7 +75,7 @@ To disable specific metrics:
 | `altibase_lf_prepare_wait_count` | — | Logfile prepare wait count. |
 | `altibase_lock_hold_count` | — | Number of lock holds. |
 | `altibase_lock_wait_count` | — | Number of lock waits. |
-| `altibase_lock_table` | table_name, trans_id, lock_desc | Locked tables (one series per lock; value 1). |
+| `altibase_lock_table` | schema, table_name, trans_id, lock_desc | Locked tables (one series per lock; value 1). |
 | `altibase_long_run_query_count` | — | Long-running queries (&gt; 1s). |
 | `altibase_utrans_query_count` | — | Uncommitted transaction queries. |
 | `altibase_fullscan_query_count` | — | Full-scan queries (excl. exporter). |
@@ -110,8 +110,8 @@ To disable specific metrics:
 | `altibase_user_failed_login_attempts` | user_name | Failed login attempts. |
 | `altibase_memory_table_usage_bytes` | — | Total memory table usage. |
 | `altibase_disk_table_usage_bytes` | — | Total disk table usage. |
-| `altibase_memory_table_usage_bytes_per_table` | table_name | Per table, top 5. |
-| `altibase_disk_table_usage_bytes_per_table` | table_name | Per table, top 5. |
+| `altibase_memory_table_usage_bytes_per_table` | schema, table_name | Per table, top 5. |
+| `altibase_disk_table_usage_bytes_per_table` | schema, table_name | Per table, top 5. |
 | `altibase_table_size_bytes` | schema, table_name, tablespace, type | Size per user table (memory/disk). |
 | `altibase_service_thread_count` | kind, value | Count by type/state/run_mode. |
 | `altibase_sysstat` | name | System statistic values. |
@@ -122,7 +122,7 @@ To disable specific metrics:
 | `altibase_file_io_wait_seconds` | name | Avg single-block read wait per file (s). |
 | `altibase_system_event_time_waited_seconds` | name | System event time waited (non-Idle). |
 | `altibase_session_event_time_waited_seconds` | name | Session event time waited (non-Idle). |
-| `altibase_queue_usage_bytes` | name | Queue table usage. |
+| `altibase_queue_usage_bytes` | schema, table_name | Queue table usage. |
 | `altibase_segment_usage_bytes` | name | Segment usage by tablespace. |
 | `altibase_index_alloc_size_bytes` | schema, table_name, tablespace, index_name, index_type | Index allocation size in bytes per index. |
 | `altibase_index_metadata` | schema, table_name, index_name, index_id, tablespace, is_unique, column_cnt | Index metadata (value 1 per index). |

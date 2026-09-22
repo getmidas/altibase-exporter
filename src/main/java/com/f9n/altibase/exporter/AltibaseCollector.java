@@ -564,24 +564,30 @@ public final class AltibaseCollector implements MultiCollector {
 
     @ScrapeMetric("memory_table_usage_bytes_per_table")
     private void scrapeMemoryTableUsagePerTable(ScrapeContext ctx) throws SQLException {
+        // table names are only unique per-schema; join SYS_USERS_ so tables sharing
+        // a name across different schemas don't collide into the same label set
         try (ResultSet rs = ctx.statement().executeQuery(
-                "SELECT TABLE_NAME, (FIXED_ALLOC_MEM+VAR_ALLOC_MEM) AS ALLOC FROM SYSTEM_.SYS_TABLES_ A, V$MEMTBL_INFO B WHERE A.USER_ID != 1 AND A.TABLE_OID = B.TABLE_OID ORDER BY ALLOC DESC LIMIT 5")) {
+                "SELECT U.USER_NAME, A.TABLE_NAME, (B.FIXED_ALLOC_MEM+B.VAR_ALLOC_MEM) AS ALLOC FROM SYSTEM_.SYS_TABLES_ A, V$MEMTBL_INFO B, SYSTEM_.SYS_USERS_ U WHERE A.USER_ID != 1 AND A.TABLE_OID = B.TABLE_OID AND A.USER_ID = U.USER_ID ORDER BY ALLOC DESC LIMIT 5")) {
             while (rs.next()) {
-                String name = rs.getString(1);
-                long alloc = rs.getLong(2);
-                if (name != null) ctx.addGauge("memory_table_usage_bytes_per_table", Labels.of("table_name", name), alloc);
+                String schema = nullToEmpty(rs.getString(1));
+                String name = rs.getString(2);
+                long alloc = rs.getLong(3);
+                if (name != null) ctx.addGauge("memory_table_usage_bytes_per_table", Labels.of("schema", schema, "table_name", name), alloc);
             }
         }
     }
 
     @ScrapeMetric("disk_table_usage_bytes_per_table")
     private void scrapeDiskTableUsagePerTable(ScrapeContext ctx) throws SQLException {
+        // table names are only unique per-schema; join SYS_USERS_ so tables sharing
+        // a name across different schemas don't collide into the same label set
         try (ResultSet rs = ctx.statement().executeQuery(
-                "SELECT C.TABLE_NAME, B.DISK_TOTAL_PAGE_CNT * A.PAGE_SIZE AS ALLOC FROM V$TABLESPACES A, V$DISKTBL_INFO B, SYSTEM_.SYS_TABLES_ C WHERE A.ID = B.TABLESPACE_ID AND B.TABLE_OID = C.TABLE_OID ORDER BY ALLOC DESC LIMIT 5")) {
+                "SELECT U.USER_NAME, C.TABLE_NAME, B.DISK_TOTAL_PAGE_CNT * A.PAGE_SIZE AS ALLOC FROM V$TABLESPACES A, V$DISKTBL_INFO B, SYSTEM_.SYS_TABLES_ C, SYSTEM_.SYS_USERS_ U WHERE A.ID = B.TABLESPACE_ID AND B.TABLE_OID = C.TABLE_OID AND C.USER_ID = U.USER_ID ORDER BY ALLOC DESC LIMIT 5")) {
             while (rs.next()) {
-                String name = rs.getString(1);
-                long alloc = rs.getLong(2);
-                if (name != null) ctx.addGauge("disk_table_usage_bytes_per_table", Labels.of("table_name", name), alloc);
+                String schema = nullToEmpty(rs.getString(1));
+                String name = rs.getString(2);
+                long alloc = rs.getLong(3);
+                if (name != null) ctx.addGauge("disk_table_usage_bytes_per_table", Labels.of("schema", schema, "table_name", name), alloc);
             }
         }
     }
@@ -623,16 +629,19 @@ public final class AltibaseCollector implements MultiCollector {
 
     @ScrapeMetric("queue_usage_bytes")
     private void scrapeQueueUsage(ScrapeContext ctx) throws SQLException {
+        // group by (schema, table_name): a queue table name is only unique per-schema,
+        // grouping by name alone would silently merge same-named queues from different schemas
         String sql = """
-            SELECT B.TABLE_NAME, SUM(C.FIXED_ALLOC_MEM+C.VAR_ALLOC_MEM) AS ALLOC FROM SYSTEM_.SYS_USERS_ A, SYSTEM_.SYS_TABLES_ B, V$MEMTBL_INFO C, V$TABLESPACES D \
+            SELECT A.USER_NAME, B.TABLE_NAME, SUM(C.FIXED_ALLOC_MEM+C.VAR_ALLOC_MEM) AS ALLOC FROM SYSTEM_.SYS_USERS_ A, SYSTEM_.SYS_TABLES_ B, V$MEMTBL_INFO C, V$TABLESPACES D \
             WHERE A.USER_NAME <> 'SYSTEM_' AND B.TABLE_TYPE = 'Q' AND A.USER_ID = B.USER_ID AND B.TABLE_OID = C.TABLE_OID AND B.TBS_ID = D.ID \
-            GROUP BY B.TABLE_NAME
+            GROUP BY A.USER_NAME, B.TABLE_NAME
             """;
         try (ResultSet rs = ctx.statement().executeQuery(sql)) {
             while (rs.next()) {
-                String name = rs.getString(1);
-                long alloc = rs.getLong(2);
-                if (name != null) ctx.addGauge("queue_usage_bytes", Labels.of("table_name", name), alloc);
+                String schema = nullToEmpty(rs.getString(1));
+                String name = rs.getString(2);
+                long alloc = rs.getLong(3);
+                if (name != null) ctx.addGauge("queue_usage_bytes", Labels.of("schema", schema, "table_name", name), alloc);
             }
         }
     }
@@ -920,13 +929,16 @@ public final class AltibaseCollector implements MultiCollector {
 
     @ScrapeMetric(value = "lock_table", catchSchemaError = true)
     private void scrapeLockTableList(ScrapeContext ctx) throws SQLException {
-        String sql = "SELECT A.TABLE_NAME, B.TRANS_ID, B.LOCK_DESC FROM SYSTEM_.SYS_TABLES_ A, V$LOCK B WHERE A.TABLE_OID = B.TABLE_OID";
+        // include schema: a table name is only unique per-schema, so without it two locks on
+        // same-named tables in different schemas could produce the same label set
+        String sql = "SELECT U.USER_NAME, A.TABLE_NAME, B.TRANS_ID, B.LOCK_DESC FROM SYSTEM_.SYS_TABLES_ A, V$LOCK B, SYSTEM_.SYS_USERS_ U WHERE A.TABLE_OID = B.TABLE_OID AND A.USER_ID = U.USER_ID";
         try (ResultSet rs = ctx.statement().executeQuery(sql)) {
             while (rs.next()) {
-                String tableName = nullToEmpty(rs.getString(1));
-                long transId = rs.getLong(2);
-                String lockDesc = nullToEmpty(rs.getString(3));
-                ctx.addGauge("lock_table", Labels.of("table_name", tableName, "trans_id", String.valueOf(transId), "lock_desc", lockDesc), 1);
+                String schema = nullToEmpty(rs.getString(1));
+                String tableName = nullToEmpty(rs.getString(2));
+                long transId = rs.getLong(3);
+                String lockDesc = nullToEmpty(rs.getString(4));
+                ctx.addGauge("lock_table", Labels.of("schema", schema, "table_name", tableName, "trans_id", String.valueOf(transId), "lock_desc", lockDesc), 1);
             }
         }
     }
